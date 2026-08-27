@@ -18,8 +18,19 @@ import { hasFlag, operands } from './shell.js';
 /** Branches where a history rewrite affects everyone, not just you. */
 const SHARED_BRANCHES = new Set(['main', 'master', 'develop', 'release', 'production', 'prod']);
 
-/** How long we let git block the hot path before giving up. */
-const GIT_TIMEOUT_MS = 1500;
+/**
+ * How long we let git block before giving up.
+ *
+ * Measured rather than guessed: `git status --porcelain` on a trivial repo costs
+ * 280–470ms on Windows, and comfortably exceeds a second when the machine is busy.
+ * An earlier 1.5s budget meant the check degraded to "assume dirty" precisely when a
+ * developer's machine was under load — which would quietly disable the clean-tree
+ * pass-through, the main thing these rules exist to provide.
+ *
+ * Five seconds is affordable because this only runs for destructive git commands,
+ * which are rare, and pausing before one is exactly when a pause is acceptable.
+ */
+const GIT_TIMEOUT_MS = 5000;
 
 const finding = (
   rule: string,
