@@ -1,5 +1,9 @@
 # Warden
 
+[![CI](https://github.com/dorianspitz23/claude-warden/actions/workflows/ci.yml/badge.svg)](https://github.com/dorianspitz23/claude-warden/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+
 **An independent watchdog that checks what your AI coding agent is about to do — before it does it.**
 
 You give Claude Code access to your files and let it run commands. Most of the time you skim the
