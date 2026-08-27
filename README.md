@@ -1,6 +1,6 @@
 # Warden
 
-[![CI](https://github.com/dorianspitz23/claude-warden/actions/workflows/ci.yml/badge.svg)](https://github.com/dorianspitz23/claude-warden/actions/workflows/ci.yml)
+[![CI](https://github.com/claude-warden/warden/actions/workflows/ci.yml/badge.svg)](https://github.com/claude-warden/warden/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
@@ -40,7 +40,7 @@ obeyed. The attack becomes the detector.
 ## Install
 
 ```bash
-npm install -g github:dorianspitz23/claude-warden
+npm install -g github:claude-warden/warden
 warden install     # adds the PreToolUse hook to ~/.claude/settings.json
 warden test        # prove it actually blocks things
 ```
