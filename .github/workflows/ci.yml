@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Warden shells out to git and reads paths on both POSIX and Windows, and the
+    # rules differ between them — so both are tested rather than assumed equivalent.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # The git rules inspect a real working tree, so the test suite creates real
+      # repositories. Without an identity, `git commit` fails in a clean runner.
+      - name: Configure git identity for the test repositories
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test

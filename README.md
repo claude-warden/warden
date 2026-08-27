@@ -36,10 +36,18 @@ obeyed. The attack becomes the detector.
 ## Install
 
 ```bash
-npm install -g claude-warden
+npm install -g github:dorianspitz23/claude-warden
 warden install     # adds the PreToolUse hook to ~/.claude/settings.json
 warden test        # prove it actually blocks things
 ```
+
+Not on npm yet — install straight from the repo. It builds on install, so you need
+Node 20 or newer and nothing else.
+
+**Read the source before you trust it.** That advice applies to any tool you give this
+much visibility, including this one. It is a few thousand lines of TypeScript with no
+runtime dependencies beyond the Anthropic SDK, and [`CONTRACT.md`](./CONTRACT.md) tells you
+which guarantees to check.
 
 `warden install` leaves any hooks you already have untouched, and running it twice does not
 install it twice. `warden uninstall` restores your settings file exactly.
