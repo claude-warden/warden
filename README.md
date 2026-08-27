@@ -90,6 +90,9 @@ Being honest about this matters more than sounding impressive.
 
 ## Privacy
 
+**No telemetry, ever.** Warden does not phone home, count installs, or report what it
+blocked. A tool that watches your commands and reports upstream would be self-defeating.
+
 The deterministic rules are entirely local. Nothing leaves your machine.
 
 **The auditor does not work that way.** When a tool call matches no rule, Warden sends the tool
@@ -176,6 +179,11 @@ npm install
 npm test          # 273 tests
 npm run test:smoke
 ```
+
+[`CONTRACT.md`](./CONTRACT.md) lists the eleven invariants that make Warden trustworthy and
+names the test that locks each one. Read it before changing anything in `src/rules/` or
+`src/auditor.ts` — several of those guarantees are easy to weaken by accident and hard to
+notice afterwards.
 
 ## License
 
