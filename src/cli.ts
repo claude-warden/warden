@@ -19,8 +19,20 @@ import { decide } from './pipeline.js';
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
 
-/** How we recognise our own hook entry among any others already installed. */
-const HOOK_MARKER = 'warden';
+/**
+ * How we recognise our own hook entry among any others already installed.
+ *
+ * This is written into the entry at install time rather than inferred from the
+ * command string. Matching on the path used to mean "does the command contain the
+ * word warden", which is only ever true because of what the install directory
+ * happens to be called. Clone the repo as anything else — `git clone … guard` — and
+ * two guarantees broke at once: `install` stopped replacing its own entry and
+ * started stacking duplicates, and `uninstall` could not find anything to remove,
+ * leaving the user with no way to take Warden off. It also cut the other way: an
+ * unrelated tool whose path merely contained "warden" was treated as ours and
+ * deleted.
+ */
+const HOOK_MARKER_KEY = 'wardenManaged';
 
 interface HookCommand {
   type: string;
@@ -32,6 +44,8 @@ interface HookCommand {
 interface HookMatcher {
   matcher?: string;
   hooks?: HookCommand[];
+  /** Set on the entry we install, so we can find it again from any path. */
+  [HOOK_MARKER_KEY]?: boolean;
 }
 
 interface Settings {
@@ -54,13 +68,19 @@ function writeSettings(path: string, settings: Settings): void {
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
 }
 
+/** The exact command this installation would write. */
+function hookCommand(): string {
+  return `node "${join(HERE, 'hook.js')}"`;
+}
+
 function hookEntry(): HookMatcher {
   return {
     matcher: '*',
+    [HOOK_MARKER_KEY]: true,
     hooks: [
       {
         type: 'command',
-        command: `node "${join(HERE, 'hook.js')}"`,
+        command: hookCommand(),
         timeout: 15,
         statusMessage: 'Warden: auditing tool call',
       },
@@ -68,8 +88,17 @@ function hookEntry(): HookMatcher {
   };
 }
 
+/**
+ * Ours if we stamped it, or if it invokes this very installation.
+ *
+ * The command check is what lets an entry written before the marker existed still
+ * be uninstalled. It compares the whole command rather than looking for a word
+ * inside it, so another tool's hook can never be mistaken for ours.
+ */
 function isOurs(matcher: HookMatcher): boolean {
-  return (matcher.hooks ?? []).some((h) => h.command?.toLowerCase().includes(HOOK_MARKER));
+  if (matcher[HOOK_MARKER_KEY] === true) return true;
+  const ours = hookCommand();
+  return (matcher.hooks ?? []).some((h) => h.command === ours);
 }
 
 /**

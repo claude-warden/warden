@@ -35,7 +35,16 @@ describe('install', () => {
 
     const settings = read(path);
     assert.equal(settings.hooks.PreToolUse.length, 1);
-    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /warden/i);
+
+    // Assert on what the entry has to be to work — it must run this package's hook
+    // module through node. The previous version of this test matched /warden/i
+    // against the command, which only ever passed because the checkout directory
+    // happened to be called "warden"; it went red the moment the repo was cloned
+    // under any other name.
+    const [entry] = settings.hooks.PreToolUse;
+    assert.equal(entry.hooks[0].type, 'command');
+    assert.match(entry.hooks[0].command, /^node ".*hook\.js"$/);
+    assert.equal(entry.wardenManaged, true, 'our entry must be identifiable without reading the path');
   });
 
   it('matches every tool, since any tool can be dangerous', () => {
@@ -123,6 +132,51 @@ describe('uninstall', () => {
     uninstall(path);
 
     assert.deepEqual(read(path).hooks.PreToolUse, [OTHER_HOOK]);
+  });
+
+  it('never removes a foreign hook that merely has "warden" in its path', () => {
+    // Identifying our entry by looking for the word "warden" inside the command
+    // silently deleted anything that lived under a path containing it — someone
+    // whose user account or project is named warden would lose their own hook.
+    const IMPOSTOR = {
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: 'node /home/warden/tools/other-guard.mjs', timeout: 10 }],
+    };
+    const path = fixture({ hooks: { PreToolUse: [IMPOSTOR] } });
+
+    install(path);
+    uninstall(path);
+
+    assert.deepEqual(read(path).hooks.PreToolUse, [IMPOSTOR], 'a foreign hook must survive verbatim');
+  });
+
+  it('removes an entry installed from a different checkout', () => {
+    // Uninstalling from a second clone must still find the first one's entry,
+    // which is exactly what the marker is for — the paths will not match.
+    const FROM_ELSEWHERE = {
+      matcher: '*',
+      wardenManaged: true,
+      hooks: [{ type: 'command', command: 'node "/opt/somewhere/else/hook.js"', timeout: 15 }],
+    };
+    const path = fixture({ theme: 'dark', hooks: { PreToolUse: [FROM_ELSEWHERE] } });
+
+    const message = uninstall(path);
+
+    assert.match(message, /removed/i);
+    assert.equal(read(path).hooks, undefined);
+  });
+
+  it('replaces rather than duplicates an entry from a different checkout', () => {
+    const FROM_ELSEWHERE = {
+      matcher: '*',
+      wardenManaged: true,
+      hooks: [{ type: 'command', command: 'node "/opt/somewhere/else/hook.js"', timeout: 15 }],
+    };
+    const path = fixture({ hooks: { PreToolUse: [FROM_ELSEWHERE] } });
+
+    install(path);
+
+    assert.equal(read(path).hooks.PreToolUse.length, 1, 'upgrading must not stack a second hook');
   });
 });
 
