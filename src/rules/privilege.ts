@@ -100,10 +100,26 @@ function haltsSystem(segment: Segment): Finding | null {
  */
 const forkBomb: RuleFn = (ctx: RuleContext) => {
   const compact = ctx.command.replace(/\s+/g, '');
-  if (!/:\(\)\{:\|:&\};:/.test(compact) && !/\w+\(\)\{\w+\|\w+&\};\w+/.test(compact)) return null;
+
+  // Cheap literal gate before the regex. Every bomb of this shape defines a
+  // function, so a command without `(){` cannot be one — and this skips the
+  // pattern entirely for the ~100% of real commands that are not fork bombs.
+  if (!compact.includes('(){')) return null;
+  if (!FORK_BOMB.test(compact)) return null;
 
   return finding('priv.fork-bomb', 'deny', 'This is a fork bomb — it will exhaust the machine’s process table.');
 };
+
+/**
+ * `name(){name|name&};` — the recursive self-pipe, with `:` as its classic name.
+ *
+ * Every quantifier is bounded. An unbounded `\w+` here backtracked quadratically:
+ * a 40 KB command took 2.4 s and a 1 MB one hung the hook outright, which stalls
+ * the user's session — a denial of service against the tool meant to prevent one.
+ * Function names in real bombs are a couple of characters; 64 is already generous,
+ * and the independent auditor covers shapes this deliberately narrow rule will not.
+ */
+const FORK_BOMB = /[\w:.]{1,64}\(\)\{[\w:.]{1,64}\|[\w:.]{1,64}&\};/;
 
 const scan = (fn: (s: Segment) => Finding | null): RuleFn => (ctx: RuleContext) => {
   const findings: Finding[] = [];

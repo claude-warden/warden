@@ -106,6 +106,32 @@ unit tests still passed.
 *Locked by:* `test/helpers.ts` — every rule assertion routes through `decideCommand()`.
 Keep it that way.
 
+## I12 — A rule matches the action, not the spelling of the action
+
+`"rm"`, `r''m`, `\rm` and `sh -c "rm …"` are the same action. So are `/`, `//`, `/.`, `$HOME`
+and `~/`. Rules resolve the target and the argv before judging, because a matcher that keys on
+surface text is trivially evaded by anyone who has read it.
+
+An early pass of the evasion corpus got **13 of 40 attacks straight through** on exactly this
+failure. Each one is now a named regression test.
+
+*Locked by:* `test/evasion.test.ts` — 40+ cases across nine technique groups, every one
+asserting `!== 'allow'`. Add to it whenever a new evasion is found; never shrink it.
+
+## I13 — Warden cannot be made to hang
+
+Warden runs synchronously in front of every tool call, so a command that makes it spin stalls
+the session — and the practical remedy is to uninstall Warden. Stalling the guard is therefore
+a way of disabling it, which makes a hang a security bug rather than a slow path.
+
+Two real hangs are pinned: substitution extraction that was exponential in nesting depth, and
+an unbounded `\w+` in the fork-bomb pattern that backtracked quadratically. Against the
+unfixed code the resilience suite runs for 400 s and fails; against the fixed code, 1.6 s.
+
+*Locked by:* `test/resilience.test.ts` — every rule against 11 adversarial input shapes at
+200 KB, the parser against nesting 1 000 deep, and the full pipeline against 1 MB payloads.
+Any new regex on the hot path needs bounded quantifiers.
+
 ---
 
 ## Deliberate non-guarantees

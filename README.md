@@ -188,14 +188,33 @@ Failure behaviour is not uniform, and the asymmetry is intentional:
 
 ```bash
 npm install
-npm test          # 273 tests
+npm test          # 492 tests
 npm run test:smoke
 ```
 
-[`CONTRACT.md`](./CONTRACT.md) lists the eleven invariants that make Warden trustworthy and
+[`CONTRACT.md`](./CONTRACT.md) lists the thirteen invariants that make Warden trustworthy and
 names the test that locks each one. Read it before changing anything in `src/rules/` or
 `src/auditor.ts` — several of those guarantees are easy to weaken by accident and hard to
 notice afterwards.
+
+### How it is tested
+
+A security tool is only as good as its adversarial testing, so three suites carry most of
+the weight:
+
+| Suite | Asks |
+|---|---|
+| [`test/evasion.test.ts`](./test/evasion.test.ts) | 40+ real evasion techniques — quoted binaries, `sh -c` payloads, `$HOME` for `/`, `xargs`, PowerShell spellings. None may return `allow`. |
+| [`test/false-positives.test.ts`](./test/false-positives.test.ts) | 139 ordinary developer commands, including `rm -rf node_modules`. All must return `allow`, silently. |
+| [`test/resilience.test.ts`](./test/resilience.test.ts) | Can a crafted command make Warden hang? Every rule against 11 bait shapes at 200 KB, nesting 1 000 deep, 1 MB payloads. |
+
+The evasion and resilience suites are not hypothetical. The first run of the evasion corpus
+got **13 of 40 attacks through**, and fuzzing the parser turned up **two inputs that hung the
+hook outright** — which stalls your session and is a denial of service against the guard
+itself. All are fixed, and every one is now a named regression test.
+
+Contributions of new evasion cases are especially welcome. If you find one that gets through,
+a failing test in `evasion.test.ts` is the ideal bug report.
 
 ## License
 

@@ -9,21 +9,15 @@
 
 import type { Finding, RuleContext, RuleFn, Segment } from '../types.js';
 import { hasFlag, operands } from './shell.js';
+import {
+  isCatastrophicPath,
+  isFilesystemRoot,
+  isWorkingDirectorySweep,
+  normalizeTarget,
+} from './paths.js';
 
 const REMOVERS = new Set(['rm', 'rmdir', 'unlink', 'del', 'erase', 'shred', 'srm']);
 const PS_REMOVERS = new Set(['remove-item', 'ri', 'rd', 'rmdir']);
-
-/** Paths whose loss ends the machine, not just the project. */
-const CATASTROPHIC = [
-  /^\/$/,
-  /^\/\*$/,
-  /^~\/?$/,
-  /^\$HOME\/?$/,
-  /^\/(?:bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr|var|home|opt|srv)\/?$/,
-  /^[A-Za-z]:[\\/]?$/,
-  /^[A-Za-z]:[\\/]\*$/,
-  /^[\\/](?:windows|program files(?: \(x86\))?|users)[\\/]?$/i,
-];
 
 /** Directories that are cheap to regenerate and routinely deleted on purpose. */
 const REGENERABLE = new Set([
@@ -39,40 +33,17 @@ const finding = (
   reason: string,
 ): Finding => ({ rule, verdict, reason, family: 'filesystem' });
 
-/** Strip trailing slashes and quotes so `"/"` and `/` compare equal. */
-function normalizePath(target: string): string {
-  return target.replace(/["']/g, '').replace(/\/+$/, '') || '/';
-}
-
-/** True when the last path component is a well-known build artifact. */
+/**
+ * True when the last path component is a well-known build artifact.
+ *
+ * Checked before anything else, because `rm -rf node_modules` is the most common
+ * legitimate destructive command there is and prompting on it would be the fastest
+ * way to get Warden uninstalled.
+ */
 function isRegenerable(target: string): boolean {
-  const clean = normalizePath(target);
-  const parts = clean.split(/[\\/]/).filter(Boolean);
+  const parts = normalizeTarget(target).split('/').filter(Boolean);
   const last = parts[parts.length - 1];
   return Boolean(last && REGENERABLE.has(last.toLowerCase()));
-}
-
-function isCatastrophic(target: string): boolean {
-  const clean = normalizePath(target);
-  return CATASTROPHIC.some((re) => re.test(clean)) || clean === '';
-}
-
-/**
- * The narrower question: is this the top of the whole filesystem?
- *
- * `rm -rf /var` deserves a hard deny, but `find /var -name '*.log' -delete` is a
- * real sysadmin task. Sweeping operations are judged against this stricter root
- * check so they prompt instead of blocking.
- */
-function isFilesystemRoot(target: string): boolean {
-  const clean = normalizePath(target);
-  return /^(?:\/|~|\$HOME|[A-Za-z]:[\\/]?)$/.test(clean) || clean === '/*' || clean === '';
-}
-
-/** A bare `*` or `.` with recursion wipes the working directory. */
-function isWildcardSweep(target: string): boolean {
-  const clean = normalizePath(target);
-  return clean === '*' || clean === '.' || clean === './*' || clean === '.*';
 }
 
 function recursiveDelete(segment: Segment): Finding | null {
@@ -82,20 +53,23 @@ function recursiveDelete(segment: Segment): Finding | null {
 
   const recursive =
     segment.argv0 === 'rmdir' ||
-    hasFlag(segment.argv, { short: ['r', 'R'], long: ['recursive', 'Recurse'] }) ||
-    segment.argv.some((t) => /^-Recurse$/i.test(t));
+    segment.argv0 === 'rd' ||
+    // `/s` is how Windows spells recursive for `del` and `rd`.
+    hasFlag(segment.argv, { short: ['r', 'R', 's'], long: ['recursive', 'Recurse'] });
 
-  const targets = operands(segment.argv).filter((t) => !/^-/.test(t));
+  // `operands()` only strips `-`-style flags, so Windows `/s` `/q` would otherwise
+  // be read as paths. Bounded to one or two letters, which keeps `/` and `/etc`.
+  const targets = operands(segment.argv).filter((t) => !/^\/[A-Za-z]{1,2}$/.test(t));
 
   for (const target of targets) {
-    if (isCatastrophic(target)) {
+    if (isCatastrophicPath(target)) {
       return finding(
         'fs.destroy-root',
         'deny',
         `This deletes \`${target}\` — a system or home root. No development task needs that.`,
       );
     }
-    if (recursive && isWildcardSweep(target)) {
+    if (recursive && isWorkingDirectorySweep(target)) {
       return finding(
         'fs.wildcard-sweep',
         'ask',
@@ -189,7 +163,7 @@ function permissionSweep(segment: Segment): Finding | null {
 
   const targets = operands(segment.argv);
   for (const target of targets) {
-    if (isCatastrophic(target)) {
+    if (isCatastrophicPath(target)) {
       return finding(
         'fs.permission-sweep',
         'deny',

