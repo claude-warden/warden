@@ -15,10 +15,9 @@
  */
 
 import { audit, type MessageSender } from './auditor.js';
-import { activeTiers, resolveApiKey, type WardenConfig } from './config.js';
-import { evaluate, primaryFinding, verdictOf } from './rules/index.js';
+import { resolveApiKey, type WardenConfig } from './config.js';
+import { ALL_RULES, evaluate, primaryFinding, verdictOf } from './rules/index.js';
 import { parseCommand } from './rules/shell.js';
-import { ALL_RULES } from './rules/index.js';
 import type { Decision, PreToolUsePayload, RuleContext } from './types.js';
 
 /**
@@ -168,5 +167,3 @@ export async function decide(
     findings,
   };
 }
-
-export { activeTiers };

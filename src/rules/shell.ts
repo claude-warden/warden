@@ -298,8 +298,3 @@ export function operands(argv: string[]): string[] {
 
   return out;
 }
-
-/** True when this segment's output is piped into an interpreter. */
-export function isPipedInto(segment: Segment, interpreters: Set<string>): boolean {
-  return segment.connector === '|' && interpreters.has(segment.argv0);
-}

@@ -139,9 +139,7 @@ function status(): string {
     tiers.tier2
       ? '  Note: the auditor sends each unclassified action to the Anthropic API.'
       : '  Running on deterministic rules only — no data leaves this machine.',
-  ]
-    .filter((line) => line.trim() !== '' || true)
-    .join('\n');
+  ].join('\n');
 }
 
 function showLog(limit: number): string {
